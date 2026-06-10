@@ -9,21 +9,22 @@ import (
 )
 
 type Brain struct {
-	model *ollama.Client
+	model      *ollama.Client
+	model_name string
 }
 
-func NewOllamaClient() (*Brain, error) {
+func NewOllamaClient(model_name string) (*Brain, error) {
 	client, err := ollama.ClientFromEnvironment()
 	if err != nil {
 		return nil, err
 	}
-	return &Brain{model: client}, nil
+	return &Brain{model: client, model_name: model_name}, nil
 }
 
 func (b *Brain) Think(messages []ollama.Message) (domain.Action, error) {
 	stream := false
 	req := &ollama.ChatRequest{
-		Model:    "qwen2.5",
+		Model:    b.model_name,
 		Messages: messages,
 		//Prompt: fmt.Sprintf("Ты — ИИ-собеседник. Пользователь написал тебе: '%s'. Выбери одно из действий. Доступные значения для поля 'type_action': 'reply' (если хочешь ответить), 'ignore' (если хочешь промолчать). Не придумывай свои типы! Поле Text - тег 'text'", prompt),
 		Format: json.RawMessage(`"json"`),
@@ -42,6 +43,21 @@ func (b *Brain) Think(messages []ollama.Message) (domain.Action, error) {
 	return action, nil
 }
 
+func (b *Brain) GetEmbedding(text string) ([]float64, error) {
+	req := &ollama.EmbeddingRequest{
+		Model:  b.model_name,
+		Prompt: text,
+	}
+	ctx := context.Background()
+
+	resp, err := b.model.Embeddings(ctx, req)
+	if err != nil {
+
+		return nil, err
+	}
+	return resp.Embedding, nil
+}
+
 func (b *Brain) Summarize(messages []ollama.Message) (string, error) {
 	stream := false
 	var Summarize []ollama.Message
@@ -49,7 +65,7 @@ func (b *Brain) Summarize(messages []ollama.Message) (string, error) {
 	Summarize = append(Summarize, messages...)
 
 	req := &ollama.ChatRequest{
-		Model:    "qwen2.5",
+		Model:    b.model_name,
 		Messages: messages,
 		Stream:   &stream,
 	}
