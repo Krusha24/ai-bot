@@ -6,6 +6,8 @@ import (
 	"ai-bot/internal/storage"
 	"ai-bot/internal/tg"
 
+	"context"
+	"fmt"
 	"log"
 	"os"
 	"time"
@@ -42,7 +44,7 @@ func buildContext(dp *storage.DB, chatID int64, extraSystemMsg string) ([]ollama
 	return prompt, nil
 }
 
-func handleMessageEvent(event domain.Event, dp *storage.DB, client *brain.Brain, telegramBot *tg.Bot) {
+func handleMessageEvent(event domain.Event, dp *storage.DB, vectorDB *storage.ChromemDB, client *brain.Brain, telegramBot *tg.Bot) {
 	dp.SaveMessage(event.ChatID, "user", event.Payload)
 
 	promptForLLM, err := buildContext(dp, event.ChatID, "")
@@ -71,6 +73,21 @@ func handleMessageEvent(event domain.Event, dp *storage.DB, client *brain.Brain,
 			log.Printf("Проблема саммарайза сообщений для чата %d: %v", event.ChatID, err)
 			return
 		}
+
+		embedding, err := client.GetEmbedding(summary)
+		if err != nil {
+			log.Printf("Проблема получение эмбединга для чата %d: %v", event.ChatID, err)
+			return
+		}
+
+		chunk := domain.MemoryChunk{
+			Id:        fmt.Sprintf("%d_%d", event.ChatID, time.Now().Unix()),
+			ChatID:    event.ChatID,
+			Content:   summary,
+			Embedding: embedding,
+		}
+		vectorDB.SaveChunk(context.Background(), chunk)
+
 		dp.SaveSummary(event.ChatID, summary)
 		dp.ArchiveOldMessages(event.ChatID, 15)
 	}
@@ -116,12 +133,17 @@ func main() {
 		log.Fatal(err)
 	}
 
+	vectorDB, err := storage.NewChromemDB()
+	if err != nil {
+		log.Fatal(err)
+	}
+
 	telegramBot, err := tg.NewTgBot(os.Getenv("BOTTOKEN"))
 	if err != nil {
 		log.Fatal(err)
 	}
 
-	client, err := brain.NewOllamaClient("qwen2.5")
+	client, err := brain.NewBrain("qwen2.5", "nomic-embed-text")
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -142,7 +164,7 @@ func main() {
 
 		switch event.Type {
 		case "message":
-			go handleMessageEvent(event, dp, client, telegramBot)
+			go handleMessageEvent(event, dp, vectorDB, client, telegramBot)
 
 		case "timer":
 			go handleTimerEvent(dp, client, telegramBot)
