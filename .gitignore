@@ -11,3 +11,4 @@ cmd/bot/bot.db
 # Игнорирование папки векторной базы данных RAG (в любой папке)
 rag_data/
 cmd/bot/rag_data/
+decoder.go

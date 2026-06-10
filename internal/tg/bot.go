@@ -20,14 +20,18 @@ func NewTgBot(token string) (*Bot, error) {
 	return &Bot{bot: client}, nil
 }
 
-func (b *Bot) SendMessage(message string, chatID int64) {
+func (b *Bot) SendMessage(message string, chatID int64) error {
 	ctx := context.Background()
-	b.bot.SendMessage(ctx,
+	_, err := b.bot.SendMessage(ctx,
 		tu.Message(
 			tu.ID(chatID),
 			message,
 		),
 	)
+	if err != nil {
+		return err
+	}
+	return nil
 }
 
 func (b *Bot) StartListening(events chan<- domain.Event) {

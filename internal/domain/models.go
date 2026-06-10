@@ -1,5 +1,7 @@
 package domain
 
+import "time"
+
 type Action struct {
 	Type string `json:"type_action"`
 	Text string `json:"text"`
@@ -12,7 +14,13 @@ type Event struct {
 	InContext bool   `json:"in_context"`
 }
 
-type Summary struct {
+type StoredMessage struct {
+	Id        int64
+	ChatID    int64
+	Role      string
+	Content   string
+	InContext bool
+	CreatedAt time.Time
 }
 
 type MemoryChunk struct {
@@ -20,4 +28,6 @@ type MemoryChunk struct {
 	ChatID    int64
 	Content   string
 	Embedding []float32
+	Role      string
+	CreatedAt time.Time
 }

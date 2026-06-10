@@ -4,6 +4,7 @@ import (
 	"ai-bot/internal/domain"
 	"context"
 	"fmt"
+	"time"
 
 	chromem "github.com/philippgille/chromem-go"
 )
@@ -33,7 +34,9 @@ func (b *ChromemDB) SaveChunk(ctx context.Context, chunk domain.MemoryChunk) err
 		Embedding: chunk.Embedding,
 		Content:   chunk.Content,
 		Metadata: map[string]string{
-			"chat_id": fmt.Sprintf("%d", chunk.ChatID),
+			"chat_id":    fmt.Sprintf("%d", chunk.ChatID),
+			"role":       chunk.Role,
+			"created_at": chunk.CreatedAt.Format(time.RFC3339Nano),
 		},
 	}
 
@@ -41,20 +44,39 @@ func (b *ChromemDB) SaveChunk(ctx context.Context, chunk domain.MemoryChunk) err
 }
 
 func (b *ChromemDB) SearchSimilar(ctx context.Context, chatID int64, embedding []float32, limit int) ([]domain.MemoryChunk, error) {
+	if limit <= 0 || len(embedding) == 0 {
+		return nil, nil
+	}
+	var chunks []domain.MemoryChunk
+	countOfChunks := b.collection.Count()
+	if countOfChunks <= 0 {
+		return chunks, nil
+	} else if countOfChunks < limit {
+		limit = countOfChunks
+	}
+
 	results, err := b.collection.QueryEmbedding(ctx, embedding, limit, map[string]string{"chat_id": fmt.Sprintf("%d", chatID)}, nil)
 	if err != nil {
 		return nil, err
 	}
-	var chunks []domain.MemoryChunk
 
 	for _, res := range results {
+		createdAt, err := time.Parse(time.RFC3339Nano, res.Metadata["created_at"])
+		if err != nil {
+			createdAt = time.Time{}
+		}
+
 		chunk := domain.MemoryChunk{
 			Id:        res.ID,
 			ChatID:    chatID,
+			Role:      res.Metadata["role"],
 			Content:   res.Content,
 			Embedding: res.Embedding,
+			CreatedAt: createdAt,
 		}
+
 		chunks = append(chunks, chunk)
 	}
 	return chunks, nil
+
 }

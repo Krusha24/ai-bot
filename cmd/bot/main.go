@@ -5,6 +5,7 @@ import (
 	"ai-bot/internal/domain"
 	"ai-bot/internal/storage"
 	"ai-bot/internal/tg"
+	"strings"
 
 	"context"
 	"fmt"
@@ -17,6 +18,8 @@ import (
 )
 
 const SYSTEMPROMPT = "Ты — мой дерзкий и саркастичный цифровой клон (или выбери любой другой характер). Ты общаешься с другом в Telegram. Никогда не говори, что ты ИИ. Общайся строго на русском языке, используй сленг. Твой ответ ВСЕГДА должен быть строго в формате JSON: {\"type_action\": \"reply\" или \"ignore\", \"text\": \"твой ответ\"}"
+const activeHistoryLimit = 15
+const summarizeAfterIdle = 15 * time.Minute
 
 func buildContext(dp *storage.DB, vectorDB *storage.ChromemDB, client *brain.Brain, chatID int64, userMessage, extraSystemMsg string) ([]ollama.Message, error) {
 	activeHistory, err := dp.GetActiveHistory(chatID)
@@ -37,14 +40,16 @@ func buildContext(dp *storage.DB, vectorDB *storage.ChromemDB, client *brain.Bra
 		if err != nil {
 			log.Printf("Проблема получение eмбендингов по сообщению для чата %d: %v", chatID, err)
 		}
-		chunks, err := vectorDB.SearchSimilar(context.Background(), chatID, queryEmbedding, 3)
-		if err != nil {
-			log.Printf("Проблема получение похожих eмбендингов по сообщению для чата %d: %v", chatID, err)
-		} else if len(chunks) > 0 {
-			for _, chunk := range chunks {
-				memoryString += chunk.Content + "\n"
+		if queryEmbedding != nil {
+			chunks, err := vectorDB.SearchSimilar(context.Background(), chatID, queryEmbedding, 3)
+			if err != nil {
+				log.Printf("Проблема получение похожих eмбендингов по сообщению для чата %d: %v", chatID, err)
+			} else if len(chunks) > 0 {
+				for _, chunk := range chunks {
+					memoryString += chunk.Content + "\n"
+				}
+				finalSystemContent = SYSTEMPROMPT + "\n\nДолгосрочная память (возможно, релевантные факты из прошлых бесед):\n" + memoryString
 			}
-			finalSystemContent = SYSTEMPROMPT + "\n\nДолгосрочная память (возможно, релевантные факты из прошлых бесед):\n" + memoryString
 		}
 	}
 
@@ -61,9 +66,41 @@ func buildContext(dp *storage.DB, vectorDB *storage.ChromemDB, client *brain.Bra
 	return prompt, nil
 }
 
+func saveToLongTermMemory(ctx context.Context, vectorDB *storage.ChromemDB, client *brain.Brain, chatID int64, role, content string) error {
+	if strings.TrimSpace(content) == "" {
+		return nil
+	}
+	embedding, err := client.GetEmbedding(content)
+	if err != nil {
+		return err
+	}
+
+	now := time.Now()
+
+	chunk := domain.MemoryChunk{
+		Id:        fmt.Sprintf("%d_%s_%d", chatID, role, now.UnixNano()),
+		ChatID:    chatID,
+		Role:      role,
+		Content:   content,
+		Embedding: embedding,
+		CreatedAt: now,
+	}
+
+	err = vectorDB.SaveChunk(ctx, chunk)
+	if err != nil {
+		return err
+	}
+
+	return nil
+}
 func handleMessageEvent(event domain.Event, dp *storage.DB, vectorDB *storage.ChromemDB, client *brain.Brain, telegramBot *tg.Bot) {
 	userMessage := event.Payload
 	dp.SaveMessage(event.ChatID, "user", userMessage)
+
+	err := saveToLongTermMemory(context.Background(), vectorDB, client, event.ChatID, "user", userMessage)
+	if err != nil {
+		log.Printf("Проблема получение эмбединга для чата %d и роли %v: %v", event.ChatID, "user", err)
+	}
 
 	promptForLLM, err := buildContext(dp, vectorDB, client, event.ChatID, userMessage, "")
 	if err != nil {
@@ -75,39 +112,19 @@ func handleMessageEvent(event domain.Event, dp *storage.DB, vectorDB *storage.Ch
 		log.Printf("Проблема генарции ответа для чата %d: %v", event.ChatID, err)
 		return
 	}
+
 	if action.Type == "reply" {
-		telegramBot.SendMessage(action.Text, event.ChatID)
+		err := telegramBot.SendMessage(action.Text, event.ChatID)
+		if err != nil {
+			log.Printf("Проблема отправки сообщение в телеграмм для чата для чата %d: %v", event.ChatID, err)
+			return
+		}
 		dp.SaveMessage(event.ChatID, "assistant", action.Text)
-	}
 
-	activeHistory, err := dp.GetActiveHistory(event.ChatID)
-	if err != nil {
-		log.Printf("Проблема получение активных сообщений для чата %d: %v", event.ChatID, err)
-		return
-	}
-	if len(activeHistory) > 15 {
-		summary, err := client.Summarize(activeHistory)
+		err = saveToLongTermMemory(context.Background(), vectorDB, client, event.ChatID, "assistant", action.Text)
 		if err != nil {
-			log.Printf("Проблема саммарайза сообщений для чата %d: %v", event.ChatID, err)
-			return
+			log.Printf("Проблема получение эмбединга для чата %d и роли %v: %v", event.ChatID, "assistant", err)
 		}
-
-		embedding, err := client.GetEmbedding(summary)
-		if err != nil {
-			log.Printf("Проблема получение эмбединга для чата %d: %v", event.ChatID, err)
-			return
-		}
-
-		chunk := domain.MemoryChunk{
-			Id:        fmt.Sprintf("%d_%d", event.ChatID, time.Now().Unix()),
-			ChatID:    event.ChatID,
-			Content:   summary,
-			Embedding: embedding,
-		}
-		vectorDB.SaveChunk(context.Background(), chunk)
-
-		dp.SaveSummary(event.ChatID, summary)
-		dp.ArchiveOldMessages(event.ChatID, 15)
 	}
 }
 
@@ -136,9 +153,55 @@ func userProcessing(dp *storage.DB, vectorDB *storage.ChromemDB, chatID int64, c
 		return
 	}
 	if action.Type == "reply" {
-		telegramBot.SendMessage(action.Text, chatID)
+		err = telegramBot.SendMessage(action.Text, chatID)
+		if err != nil {
+			log.Printf("Проблема отправки сообщение в телеграмм для чата для чата %d: %v", chatID, err)
+			return
+		}
 		dp.SaveMessage(chatID, "assistant", action.Text)
+		err = saveToLongTermMemory(context.Background(), vectorDB, client, chatID, "assistant", action.Text)
+		if err != nil {
+			log.Printf("Проблема получение эмбединга для чата %d и роли %v: %v", chatID, "assistant", err)
+		}
 	}
+}
+
+func maybeSummarizeIdleChat(dp *storage.DB, vectorDB *storage.ChromemDB, client *brain.Brain, chatID int64) {
+	activeHistory, err := dp.GetActiveHistory(chatID)
+	if err != nil {
+		log.Printf("Проблема получение активных сообщений для чата %d: %v", chatID, err)
+		return
+	}
+	if len(activeHistory) <= activeHistoryLimit {
+		return
+	}
+
+	lastMessageTime, err := dp.GetLastMessageTime(chatID)
+	if err != nil {
+		log.Printf("Проблема получение времени последнего сообщения для чата %d: %v", chatID, err)
+		return
+	}
+	if time.Since(lastMessageTime) < summarizeAfterIdle {
+		return
+	}
+
+	overflow := len(activeHistory) - activeHistoryLimit
+	messageToArchive := activeHistory[:overflow]
+
+	summary, err := client.Summarize(messageToArchive)
+	if err != nil {
+		log.Printf("Проблема саммарайза сообщений для чата %d: %v", chatID, err)
+		return
+	}
+
+	dp.SaveSummary(chatID, summary)
+	dp.ArchiveOldMessages(chatID, overflow)
+
+	err = saveToLongTermMemory(context.Background(), vectorDB, client, chatID, "summary", summary)
+	if err != nil {
+		log.Printf("Проблема получение эмбединга для чата %d и роли %v: %v", chatID, "summary", err)
+	}
+
 }
 
 func handleTimerEvent(dp *storage.DB, vectorDB *storage.ChromemDB, client *brain.Brain, telegramBot *tg.Bot) {
@@ -148,7 +211,8 @@ func handleTimerEvent(dp *storage.DB, vectorDB *storage.ChromemDB, client *brain
 		return
 	}
 	for _, chatID := range activeChats {
-		go userProcessing(dp, vectorDB, chatID, client, telegramBot)
+		maybeSummarizeIdleChat(dp, vectorDB, client, chatID)
+		userProcessing(dp, vectorDB, chatID, client, telegramBot)
 	}
 }
 

@@ -1,6 +1,8 @@
 package storage
 
 import (
+	"time"
+
 	_ "modernc.org/sqlite"
 
 	"github.com/jmoiron/sqlx"
@@ -77,6 +79,30 @@ func (s *DB) GetActiveChats() ([]int64, error) {
 		return nil, err
 	}
 	return chats, nil
+}
+
+func (s *DB) GetLastMessageTime(chatID int64) (time.Time, error) {
+	var raw string
+
+	query := `
+        SELECT created_at
+        FROM messages
+        WHERE chat_id = ?
+        ORDER BY id DESC
+        LIMIT 1
+    `
+	err := s.db.Get(&raw, query, chatID)
+	if err != nil {
+		return time.Time{}, err
+	}
+
+	lastTime, err := time.Parse("2006-01-02 15:04:05", raw)
+	if err != nil {
+		return time.Time{}, err
+	}
+
+	return lastTime, nil
+
 }
 
 func (s *DB) GetActiveHistory(chatID int64) ([]ollama.Message, error) {

@@ -4,6 +4,7 @@ import (
 	"ai-bot/internal/domain"
 	"context"
 	"encoding/json"
+	"log"
 
 	ollama "github.com/ollama/ollama/api"
 )
@@ -33,7 +34,11 @@ func (b *Brain) Think(messages []ollama.Message) (domain.Action, error) {
 	ctx := context.Background()
 	var action domain.Action
 	respFunc := func(resp ollama.ChatResponse) error {
-		json.Unmarshal([]byte(resp.Message.Content), &action)
+		err := json.Unmarshal([]byte(resp.Message.Content), &action)
+		if err != nil {
+			log.Printf("Проблема json-парсинга: %v", err)
+		}
+
 		return nil
 	}
 	err := b.client.Chat(ctx, req, respFunc)
