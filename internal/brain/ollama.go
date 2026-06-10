@@ -9,22 +9,23 @@ import (
 )
 
 type Brain struct {
-	model      *ollama.Client
-	model_name string
+	client     *ollama.Client
+	chatModel  string
+	embedModel string
 }
 
-func NewOllamaClient(model_name string) (*Brain, error) {
+func NewBrain(chatModel, embedModel string) (*Brain, error) {
 	client, err := ollama.ClientFromEnvironment()
 	if err != nil {
 		return nil, err
 	}
-	return &Brain{model: client, model_name: model_name}, nil
+	return &Brain{client: client, chatModel: chatModel, embedModel: embedModel}, nil
 }
 
 func (b *Brain) Think(messages []ollama.Message) (domain.Action, error) {
 	stream := false
 	req := &ollama.ChatRequest{
-		Model:    b.model_name,
+		Model:    b.chatModel,
 		Messages: messages,
 		Format:   json.RawMessage(`"json"`),
 		Stream:   &stream,
@@ -35,7 +36,7 @@ func (b *Brain) Think(messages []ollama.Message) (domain.Action, error) {
 		json.Unmarshal([]byte(resp.Message.Content), &action)
 		return nil
 	}
-	err := b.model.Chat(ctx, req, respFunc)
+	err := b.client.Chat(ctx, req, respFunc)
 	if err != nil {
 		return action, err
 	}
@@ -44,12 +45,12 @@ func (b *Brain) Think(messages []ollama.Message) (domain.Action, error) {
 
 func (b *Brain) GetEmbedding(text string) ([]float32, error) {
 	req := &ollama.EmbeddingRequest{
-		Model:  b.model_name,
+		Model:  b.embedModel,
 		Prompt: text,
 	}
 	ctx := context.Background()
 
-	resp, err := b.model.Embeddings(ctx, req)
+	resp, err := b.client.Embeddings(ctx, req)
 	if err != nil {
 
 		return nil, err
@@ -68,7 +69,7 @@ func (b *Brain) Summarize(messages []ollama.Message) (string, error) {
 	Summarize = append(Summarize, messages...)
 
 	req := &ollama.ChatRequest{
-		Model:    b.model_name,
+		Model:    b.chatModel,
 		Messages: Summarize,
 		Stream:   &stream,
 	}
@@ -78,7 +79,7 @@ func (b *Brain) Summarize(messages []ollama.Message) (string, error) {
 		summary = resp.Message.Content
 		return nil
 	}
-	err := b.model.Chat(ctx, req, respFunc)
+	err := b.client.Chat(ctx, req, respFunc)
 	if err != nil {
 		return summary, err
 	}

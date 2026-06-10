@@ -1,2 +1,13 @@
 .env
-PROJECT_PLAN.md
+PROJECT_PLAN.MD
+go.mod
+go.sum
+
+# Игнорирование базы данных SQLite (в любой папке)
+*.db
+bot.db
+cmd/bot/bot.db
+
+# Игнорирование папки векторной базы данных RAG (в любой папке)
+rag_data/
+cmd/bot/rag_data/

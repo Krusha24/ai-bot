@@ -18,7 +18,7 @@ import (
 
 const SYSTEMPROMPT = "Ты — мой дерзкий и саркастичный цифровой клон (или выбери любой другой характер). Ты общаешься с другом в Telegram. Никогда не говори, что ты ИИ. Общайся строго на русском языке, используй сленг. Твой ответ ВСЕГДА должен быть строго в формате JSON: {\"type_action\": \"reply\" или \"ignore\", \"text\": \"твой ответ\"}"
 
-func buildContext(dp *storage.DB, chatID int64, extraSystemMsg string) ([]ollama.Message, error) {
+func buildContext(dp *storage.DB, vectorDB *storage.ChromemDB, client *brain.Brain, chatID int64, userMessage, extraSystemMsg string) ([]ollama.Message, error) {
 	activeHistory, err := dp.GetActiveHistory(chatID)
 	if err != nil {
 		log.Printf("Проблема получение активных сообщений для чата %d: %v", chatID, err)
@@ -30,7 +30,24 @@ func buildContext(dp *storage.DB, chatID int64, extraSystemMsg string) ([]ollama
 		return nil, err
 	}
 
-	finalSystemContent := SYSTEMPROMPT
+	var finalSystemContent, memoryString string
+	finalSystemContent = SYSTEMPROMPT
+	if userMessage != "" {
+		queryEmbedding, err := client.GetEmbedding(userMessage)
+		if err != nil {
+			log.Printf("Проблема получение eмбендингов по сообщению для чата %d: %v", chatID, err)
+		}
+		chunks, err := vectorDB.SearchSimilar(context.Background(), chatID, queryEmbedding, 3)
+		if err != nil {
+			log.Printf("Проблема получение похожих eмбендингов по сообщению для чата %d: %v", chatID, err)
+		} else if len(chunks) > 0 {
+			for _, chunk := range chunks {
+				memoryString += chunk.Content + "\n"
+			}
+			finalSystemContent = SYSTEMPROMPT + "\n\nДолгосрочная память (возможно, релевантные факты из прошлых бесед):\n" + memoryString
+		}
+	}
+
 	if summary != "" {
 		finalSystemContent += "\n\nКонтекст прошлых бесед: " + summary
 	}
@@ -45,9 +62,10 @@ func buildContext(dp *storage.DB, chatID int64, extraSystemMsg string) ([]ollama
 }
 
 func handleMessageEvent(event domain.Event, dp *storage.DB, vectorDB *storage.ChromemDB, client *brain.Brain, telegramBot *tg.Bot) {
-	dp.SaveMessage(event.ChatID, "user", event.Payload)
+	userMessage := event.Payload
+	dp.SaveMessage(event.ChatID, "user", userMessage)
 
-	promptForLLM, err := buildContext(dp, event.ChatID, "")
+	promptForLLM, err := buildContext(dp, vectorDB, client, event.ChatID, userMessage, "")
 	if err != nil {
 		return
 	}
@@ -59,8 +77,8 @@ func handleMessageEvent(event domain.Event, dp *storage.DB, vectorDB *storage.Ch
 	}
 	if action.Type == "reply" {
 		telegramBot.SendMessage(action.Text, event.ChatID)
+		dp.SaveMessage(event.ChatID, "assistant", action.Text)
 	}
-	dp.SaveMessage(event.ChatID, "assistant", action.Text)
 
 	activeHistory, err := dp.GetActiveHistory(event.ChatID)
 	if err != nil {
@@ -93,8 +111,22 @@ func handleMessageEvent(event domain.Event, dp *storage.DB, vectorDB *storage.Ch
 	}
 }
 
-func userProcessing(dp *storage.DB, chatID int64, client *brain.Brain, telegramBot *tg.Bot) {
-	prompt, err := buildContext(dp, chatID, "Системное уведомление: Прошло некоторое время с вашего последнего общения. У тебя есть своя жизнь, свои дела и увлечения (ты мог залипать в YouTube, кодить, играть или просто спать). Посмотри на контекст диалога выше. Появилось ли у тебя желание написать этому человеку первым? Поделиться рандомной мыслью, скинуть мемную фразу или спросить, как дела? Если тебе лень, ты занят или диалог не располагает к продолжению — смело выбирай 'ignore'. Если хочешь написать — выбирай 'reply' и пиши в своем обычном стиле.")
+func userProcessing(dp *storage.DB, vectorDB *storage.ChromemDB, chatID int64, client *brain.Brain, telegramBot *tg.Bot) {
+	messages, err := dp.GetActiveHistory(chatID)
+	if err != nil {
+		log.Printf("Проблема получение активных сообщений для чата %d: %v", chatID, err)
+		return
+	}
+
+	var lastUserMessage string
+	for i := len(messages) - 1; i >= 0; i-- {
+		if messages[i].Role == "user" {
+			lastUserMessage = messages[i].Content
+			break
+		}
+	}
+
+	prompt, err := buildContext(dp, vectorDB, client, chatID, lastUserMessage, "Системное уведомление: Прошло некоторое время с вашего последнего общения. У тебя есть своя жизнь, свои дела и увлечения (ты мог залипать в YouTube, кодить, играть или просто спать). Посмотри на контекст диалога выше. Появилось ли у тебя желание написать этому человеку первым? Поделиться рандомной мыслью, скинуть мемную фразу или спросить, как дела? Если тебе лень, ты занят или диалог не располагает к продолжению — смело выбирай 'ignore'. Если хочешь написать — выбирай 'reply' и пиши в своем обычном стиле.")
 	if err != nil {
 		return
 	}
@@ -109,15 +141,14 @@ func userProcessing(dp *storage.DB, chatID int64, client *brain.Brain, telegramB
 	}
 }
 
-func handleTimerEvent(dp *storage.DB, client *brain.Brain, telegramBot *tg.Bot) {
+func handleTimerEvent(dp *storage.DB, vectorDB *storage.ChromemDB, client *brain.Brain, telegramBot *tg.Bot) {
 	activeChats, err := dp.GetActiveChats()
 	if err != nil {
-		log.Printf("Описание проблемы: %v", err)
 		log.Printf("Проблема получения активных чатов для функции таймера: %v", err)
 		return
 	}
 	for _, chatID := range activeChats {
-		go userProcessing(dp, chatID, client, telegramBot)
+		go userProcessing(dp, vectorDB, chatID, client, telegramBot)
 	}
 }
 
@@ -167,7 +198,7 @@ func main() {
 			go handleMessageEvent(event, dp, vectorDB, client, telegramBot)
 
 		case "timer":
-			go handleTimerEvent(dp, client, telegramBot)
+			go handleTimerEvent(dp, vectorDB, client, telegramBot)
 		}
 
 	}

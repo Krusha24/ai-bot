@@ -57,15 +57,14 @@ func (s *DB) GetHistory(chatID int64) ([]ollama.Message, error) {
 		return nil, err
 	}
 
-	var history []ollama.Message
-
-	for _, row := range rows {
-		msg := ollama.Message{
+	history := make([]ollama.Message, len(rows))
+	for i, row := range rows {
+		history[i] = ollama.Message{
 			Role:    row.Role,
 			Content: row.Content,
 		}
-		history = append(history, msg)
 	}
+
 	return history, nil
 }
 
@@ -88,14 +87,14 @@ func (s *DB) GetActiveHistory(chatID int64) ([]ollama.Message, error) {
 		return nil, err
 	}
 
-	var history []ollama.Message
-	for _, row := range rows {
-		msg := ollama.Message{
+	history := make([]ollama.Message, len(rows))
+	for i, row := range rows {
+		history[i] = ollama.Message{
 			Role:    row.Role,
 			Content: row.Content,
 		}
-		history = append(history, msg)
 	}
+
 	return history, nil
 }
 
