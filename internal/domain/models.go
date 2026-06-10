@@ -14,3 +14,10 @@ type Event struct {
 
 type Summary struct {
 }
+
+type MemoryChunk struct {
+	Id        string
+	ChatID    int64
+	Content   string
+	Embedding []float32
+}

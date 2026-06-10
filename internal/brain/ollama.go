@@ -26,9 +26,8 @@ func (b *Brain) Think(messages []ollama.Message) (domain.Action, error) {
 	req := &ollama.ChatRequest{
 		Model:    b.model_name,
 		Messages: messages,
-		//Prompt: fmt.Sprintf("Ты — ИИ-собеседник. Пользователь написал тебе: '%s'. Выбери одно из действий. Доступные значения для поля 'type_action': 'reply' (если хочешь ответить), 'ignore' (если хочешь промолчать). Не придумывай свои типы! Поле Text - тег 'text'", prompt),
-		Format: json.RawMessage(`"json"`),
-		Stream: &stream,
+		Format:   json.RawMessage(`"json"`),
+		Stream:   &stream,
 	}
 	ctx := context.Background()
 	var action domain.Action
@@ -43,7 +42,7 @@ func (b *Brain) Think(messages []ollama.Message) (domain.Action, error) {
 	return action, nil
 }
 
-func (b *Brain) GetEmbedding(text string) ([]float64, error) {
+func (b *Brain) GetEmbedding(text string) ([]float32, error) {
 	req := &ollama.EmbeddingRequest{
 		Model:  b.model_name,
 		Prompt: text,
@@ -55,7 +54,11 @@ func (b *Brain) GetEmbedding(text string) ([]float64, error) {
 
 		return nil, err
 	}
-	return resp.Embedding, nil
+	emb32 := make([]float32, len(resp.Embedding))
+	for i, v := range resp.Embedding {
+		emb32[i] = float32(v)
+	}
+	return emb32, nil
 }
 
 func (b *Brain) Summarize(messages []ollama.Message) (string, error) {
@@ -66,7 +69,7 @@ func (b *Brain) Summarize(messages []ollama.Message) (string, error) {
 
 	req := &ollama.ChatRequest{
 		Model:    b.model_name,
-		Messages: messages,
+		Messages: Summarize,
 		Stream:   &stream,
 	}
 	ctx := context.Background()
